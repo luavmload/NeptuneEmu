@@ -2,7 +2,26 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <vector>
+#include <ranges>
 #include <unicorn/unicorn.h>
+
+#include "lualib.h"
+#include "lua.h"
+#include "luaconf.h"
+
+#include "Luau/Compiler.h"
+#include "Luau/BytecodeBuilder.h"
+#include "Luau/BytecodeUtils.h"
+
+#include "Luau/VM/src/lobject.h"
+#include "Luau/VM/src/lstate.h"
+#include "Luau/VM/src/lapi.h"
+
+#include "Globals.hpp"
+
+#include "somethingstupid.hpp"
+
+#define MAXCAPABILITIES (0x200000000000003FLL | 0xFFFFFFF00LL) | (1ull << 48ull)
 
 struct ProcessInfo
 {
@@ -395,6 +414,45 @@ uintptr_t GetDataModel() {
     return datamodel;
 }
 
+void SetThreadCapabilities(lua_State* state, int identity, uintptr_t capabilities) {
+    const uintptr_t Identity_o = 0x30;
+    const uintptr_t Capabilities_o = 0x48;
+    const uintptr_t Impersonator_o = gameBaseAddress + 0x34B3A50;
+
+    using Impersonator_t = void(__fastcall*)(std::int64_t*, std::int32_t*, std::int64_t);
+    Impersonator_t Impersonator = reinterpret_cast<Impersonator_t>(Impersonator_o);
+
+    auto extraSpace = (uintptr_t)(state->userdata);
+    *(uintptr_t*)(extraSpace + Identity_o) = identity;
+    *(uintptr_t*)(extraSpace + Capabilities_o) = capabilities;
+    std::int64_t Ignore[128];
+    Impersonator(Ignore, &identity, (__int64)((uintptr_t)state->userdata + Capabilities_o));
+}
+
+uintptr_t MaxCapabilities = ~0ULL;
+void SetProtoCapabilities(Proto* proto) {
+    proto->userdata = &MaxCapabilities;
+    for (int i = 0; i < proto->sizep; i++) {
+        SetProtoCapabilities(proto->p[i]);
+    }
+}
+
+uintptr_t GetBaseAddr() {
+    while (gameBaseAddress == 0x0)
+        Sleep(1000);
+
+    return gameBaseAddress;
+}
+
+void rbx_print()
+{
+    const uintptr_t print_o = gameBaseAddress + 0x1516AB0;
+    using print_t = int(__fastcall*)(int, const char*, ...);
+    print_t print = reinterpret_cast<print_t>(print_o);
+
+    print(0, "Hello externally");
+}
+
 int main()
 {
     const char* text = R"(
@@ -417,6 +475,8 @@ int main()
     }
 
     gameBaseAddress = processInfo.processBase;
+    
+    Roblox::InitializeOffsets(processInfo.processBase);
 
     std::printf("PID: %d | Base: 0x%p\n", processInfo.pid, processInfo.processBase);
 
@@ -436,7 +496,11 @@ int main()
     uintptr_t luaState = emulatedCPU.BeginEmulation((uintptr_t)GetLuaState);
 
     std::printf("Lua state: 0x%llx\n", luaState);
+    
+    emulatedCPU.SetRCX(luaState);
+    emulatedCPU.BeginEmulation((uintptr_t)rbx_print);
 
+    std::cout << std::endl << "Press [ENTER] to exit..." << std::endl;
     std::cin.get();
 
 	return 0;
